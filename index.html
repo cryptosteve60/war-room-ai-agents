@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEXUS STATION — AI Agent Command Center</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="stars"></div>
+
+  <header>
+    <div class="logo">NEXUS <span>STATION</span></div>
+    <div class="header-stats">
+      <div class="hstat">
+        <span class="hstat-label">Revenue</span>
+        <span class="hstat-val" id="totalRevenue">$4,812</span>
+      </div>
+      <div class="hstat">
+        <span class="hstat-label">Agents</span>
+        <span class="hstat-val">8 / 16</span>
+      </div>
+      <div class="hstat">
+        <span class="hstat-label">Station XP</span>
+        <span class="hstat-val">6,150</span>
+      </div>
+      <div class="hstat">
+        <span class="hstat-label">Level</span>
+        <span class="hstat-val" style="color:var(--glow-purple)">LVL 4</span>
+      </div>
+      <div class="status-dot"></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- LEFT SIDEBAR -->
+    <div class="sidebar-left">
+      <div class="sidebar-section-title">Overview</div>
+      <div class="global-stat"><span class="label">Active Agents</span><span class="val">8</span></div>
+      <div class="global-stat"><span class="label">Tasks / hr</span><span class="val" id="tasksHr">24</span></div>
+      <div class="global-stat"><span class="label">Uptime</span><span class="val">99.2%</span></div>
+      <div class="global-stat"><span class="label">Queue Depth</span><span class="val" id="queueDepth">3</span></div>
+      <div class="sidebar-section-title" style="margin-top:8px">Agents</div>
+      <div id="agentList"></div>
+    </div>
+
+    <!-- CENTER GRID -->
+    <div class="station-center">
+      <div class="station-title-bar">
+        <span class="station-title">⬡ Station Grid — 4×4</span>
+        <span class="grid-info">Station: 4×4 (16 cells) &nbsp;|&nbsp; 8 occupied</span>
+      </div>
+      <div class="room-grid" id="roomGrid"></div>
+    </div>
+
+    <!-- RIGHT DETAIL PANEL -->
+    <div class="sidebar-right">
+      <div class="detail-header" id="detailHeader">
+        <div class="detail-room-name" id="detailName">SELECT A ROOM</div>
+        <div class="detail-room-sub" id="detailSub">Click any active room to view agent details</div>
+      </div>
+      <div class="detail-body" id="detailBody">
+        <div class="empty-state">
+          <div class="icon">🛰️</div>
+          <p>Select a room from the station grid to view its agent, current tasks, logs, and metrics.</p>
+        </div>
+      </div>
+      <div class="chat-section">
+        <div class="chat-label">⌨ Command Agent</div>
+        <div class="chat-input-row">
+          <input class="chat-input" id="chatInput" placeholder="Give instruction to agent..." />
+          <button class="chat-send" id="chatSend">SEND</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="sb-item"><div class="sb-dot" style="background:var(--glow-green)"></div>ALL SYSTEMS NOMINAL</div>
+    <div class="sb-item"><div class="sb-dot" style="background:var(--glow-blue)"></div>NETWORK: ONLINE</div>
+    <div class="sb-item"><div class="sb-dot" style="background:var(--glow-gold)"></div>UPGRADES: 2 PENDING</div>
+    <div class="sb-item" id="clockBar"></div>
+  </div>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
