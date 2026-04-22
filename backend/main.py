@@ -1,6 +1,6 @@
 """
 NEXUS STATION — CrewAI Backend
-FastAPI server exposing each station agent via REST + WebSocket.
+FastAPI server with hierarchical multi-agent crew.
 
 Requires one of:
   OPENAI_API_KEY=sk-...
@@ -13,33 +13,49 @@ import os
 import queue
 import threading
 from contextlib import asynccontextmanager
-from io import StringIO
-from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 load_dotenv()
 
-# ── LLM selection ─────────────────────────────────────────────────────────────
-# CrewAI defaults to OpenAI. Override with CREWAI_LLM env var, e.g.:
-#   CREWAI_LLM=anthropic/claude-sonnet-4-6
-LLM_MODEL = os.getenv("CREWAI_LLM", "gpt-4o-mini")
-
-from crewai import Task, Crew
+from crewai import Crew, LLM, Process, Task
 from backend.agents import build_agents
 
-# Build agents once at startup
+# ── LLM — shared across all agents ───────────────────────────────────────────
+# Default: gpt-4o-mini. Override via CREWAI_LLM env var, e.g.:
+#   CREWAI_LLM=anthropic/claude-sonnet-4-6
+_LLM_MODEL = os.getenv("CREWAI_LLM", "gpt-4o-mini")
+SHARED_LLM = LLM(model=_LLM_MODEL)
+
 AGENTS: dict = {}
+
+# Agents that run inside the full hierarchical crew when COMMANDER-1 is invoked
+SPECIALIST_IDS = [
+    "mediabay", "researchlab", "factory",
+    "commsdesk", "warroom", "armory", "quarters",
+]
+
+AGENT_NAMES = {
+    "bridge":      "COMMANDER-1",
+    "mediabay":    "MEDIA-7",
+    "researchlab": "ANALYST-3",
+    "factory":     "FORGE-2",
+    "commsdesk":   "HERALD-5",
+    "warroom":     "TACTICIAN-9",
+    "armory":      "TOOLSMITH-4",
+    "quarters":    "KEEPER-6",
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global AGENTS
-    AGENTS = build_agents()
+    AGENTS = build_agents(SHARED_LLM)
     yield
+
 
 app = FastAPI(title="NEXUS STATION API", lifespan=lifespan)
 
@@ -50,11 +66,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve the frontend from the project root
-app.mount("/static", StaticFiles(directory="."), name="static")
 
-
-# ── Request / Response models ─────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 class CommandRequest(BaseModel):
     agent_id: str
     command: str
@@ -67,43 +80,78 @@ class CommandResponse(BaseModel):
     status: str = "ok"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-AGENT_NAMES = {
-    "bridge":     "COMMANDER-1",
-    "mediabay":   "MEDIA-7",
-    "researchlab":"ANALYST-3",
-    "factory":    "FORGE-2",
-    "commsdesk":  "HERALD-5",
-    "warroom":    "TACTICIAN-9",
-    "armory":     "TOOLSMITH-4",
-    "quarters":   "KEEPER-6",
-}
-
-def _run_crew_sync(agent_id: str, command: str) -> str:
-    """Run a single-agent crew synchronously (called in a thread)."""
-    agent = AGENTS.get(agent_id)
-    if agent is None:
-        return f"Unknown agent: {agent_id}"
+# ── Crew factory ──────────────────────────────────────────────────────────────
+def _make_crew(agent_id: str, command: str, step_cb=None) -> tuple[Crew, Task]:
+    """
+    Bridge (COMMANDER-1) → hierarchical crew: commander manages all specialists.
+    Any specialist → sequential crew with just that agent (direct execution).
+    """
+    agent = AGENTS[agent_id]
 
     task = Task(
         description=command,
         agent=agent,
-        expected_output="A thorough, actionable response to the given instruction.",
+        expected_output=(
+            "A thorough, actionable response. "
+            "If you are the commander, break the work into sub-tasks and "
+            "delegate each to the appropriate specialist before synthesising."
+        ),
     )
-    crew = Crew(agents=[agent], tasks=[task], verbose=False)
-    result = crew.kickoff()
-    return str(result)
+
+    if agent_id == "bridge":
+        # Full hierarchical crew — commander can delegate to any specialist
+        specialists = [AGENTS[sid] for sid in SPECIALIST_IDS]
+        crew = Crew(
+            agents=[agent] + specialists,
+            tasks=[task],
+            process=Process.hierarchical,
+            manager_agent=agent,
+            memory=True,
+            verbose=True,
+            step_callback=step_cb,
+        )
+    else:
+        # Specialist runs alone — fast, focused execution
+        crew = Crew(
+            agents=[agent],
+            tasks=[task],
+            process=Process.sequential,
+            memory=False,
+            verbose=True,
+            step_callback=step_cb,
+        )
+
+    return crew, task
 
 
-# ── REST endpoints ────────────────────────────────────────────────────────────
+# ── Sync runner (called from thread) ─────────────────────────────────────────
+def _run_sync(agent_id: str, command: str, log_q: queue.Queue) -> None:
+    """Run a crew in a background thread, pushing log lines to log_q."""
+
+    def _step(step_output):
+        try:
+            msg = getattr(step_output, "output", None) or str(step_output)
+            log_q.put({"type": "log", "msg": str(msg)[:200]})
+        except Exception:
+            pass
+
+    try:
+        crew, _ = _make_crew(agent_id, command, step_cb=_step)
+        result = crew.kickoff()
+        log_q.put({"type": "result", "msg": str(result)})
+    except Exception as exc:
+        log_q.put({"type": "error", "msg": str(exc)})
+
+
+# ── REST ──────────────────────────────────────────────────────────────────────
 @app.get("/api/agents")
 async def list_agents():
-    return {
-        "agents": [
-            {"id": aid, "name": name}
-            for aid, name in AGENT_NAMES.items()
-        ]
-    }
+    return {"agents": [{"id": k, "name": v} for k, v in AGENT_NAMES.items()]}
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "online", "agents": len(AGENTS), "llm": _LLM_MODEL}
 
 
 @app.post("/api/command", response_model=CommandResponse)
@@ -112,23 +160,30 @@ async def send_command(req: CommandRequest):
         return CommandResponse(
             agent_id=req.agent_id,
             agent_name="UNKNOWN",
-            result=f"No agent found for room '{req.agent_id}'",
+            result=f"No agent for room '{req.agent_id}'",
             status="error",
         )
 
-    # Run CrewAI in a thread so we don't block the event loop
+    log_q: queue.Queue = queue.Queue()
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _run_crew_sync, req.agent_id, req.command)
+    await loop.run_in_executor(None, _run_sync, req.agent_id, req.command, log_q)
+
+    # Drain queue for final result
+    result_msg = f"Task complete for {AGENT_NAMES.get(req.agent_id)}"
+    while not log_q.empty():
+        item = log_q.get_nowait()
+        if item["type"] == "result":
+            result_msg = item["msg"]
 
     return CommandResponse(
         agent_id=req.agent_id,
         agent_name=AGENT_NAMES.get(req.agent_id, req.agent_id),
-        result=result,
+        result=result_msg,
         status="ok",
     )
 
 
-# ── WebSocket — streaming agent output ───────────────────────────────────────
+# ── WebSocket — real-time step-by-step streaming ──────────────────────────────
 @app.websocket("/ws/{agent_id}")
 async def agent_ws(websocket: WebSocket, agent_id: str):
     await websocket.accept()
@@ -136,47 +191,39 @@ async def agent_ws(websocket: WebSocket, agent_id: str):
         while True:
             data = await websocket.receive_text()
             try:
-                msg = json.loads(data)
-                command = msg.get("command", "")
+                command = json.loads(data).get("command", "")
             except Exception:
                 command = data
 
             if not command:
                 continue
 
-            # Send an immediate ack
-            await websocket.send_json({"type": "ack", "msg": f"Running command on {AGENT_NAMES.get(agent_id, agent_id)}…"})
+            name = AGENT_NAMES.get(agent_id, agent_id)
+            await websocket.send_json({
+                "type": "ack",
+                "msg": f"{name} received command — thinking…",
+            })
 
-            # Stream result chunks via queue + thread
-            result_queue: queue.Queue = queue.Queue()
+            log_q: queue.Queue = queue.Queue()
 
-            def run():
-                try:
-                    result = _run_crew_sync(agent_id, command)
-                    result_queue.put({"type": "result", "msg": result})
-                except Exception as exc:
-                    result_queue.put({"type": "error", "msg": str(exc)})
-
-            thread = threading.Thread(target=run, daemon=True)
+            thread = threading.Thread(
+                target=_run_sync,
+                args=(agent_id, command, log_q),
+                daemon=True,
+            )
             thread.start()
 
-            # Poll queue and forward chunks to client
-            while thread.is_alive() or not result_queue.empty():
+            # Stream every step as it arrives
+            while thread.is_alive() or not log_q.empty():
                 try:
-                    item = result_queue.get_nowait()
+                    item = log_q.get_nowait()
                     await websocket.send_json(item)
                 except queue.Empty:
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.15)
 
-            # Ensure anything remaining is sent
-            while not result_queue.empty():
-                await websocket.send_json(result_queue.get_nowait())
+            # Flush anything left after thread exits
+            while not log_q.empty():
+                await websocket.send_json(log_q.get_nowait())
 
     except WebSocketDisconnect:
         pass
-
-
-# ── Health check ──────────────────────────────────────────────────────────────
-@app.get("/api/health")
-async def health():
-    return {"status": "online", "agents": len(AGENTS), "llm": LLM_MODEL}
