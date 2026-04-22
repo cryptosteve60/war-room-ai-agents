@@ -1,5 +1,6 @@
+# Backend only — run locally or deploy to Railway/Render/Fly.io
+# Do NOT deploy this to Vercel (static frontend is served separately via vercel.json)
 crewai>=1.14.2
-crewai-tools>=1.14.2
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-dotenv>=1.0.0

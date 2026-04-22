@@ -315,7 +315,9 @@ function startLiveLog(room) {
 }
 
 // ── BACKEND API ───────────────────────────────────────────────────────────────
-const API_BASE = 'http://localhost:8000';
+// Override by setting window.NEXUS_API in a <script> before this file, or
+// set the NEXUS_API_URL meta tag. Defaults to localhost for local dev.
+const API_BASE = window.NEXUS_API_URL || 'http://localhost:8000';
 let activeSocket = null;
 
 function connectAgentSocket(roomId) {

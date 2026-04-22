@@ -104,7 +104,7 @@ def _make_crew(agent_id: str, command: str, step_cb=None) -> tuple[Crew, Task]:
             tasks=[task],
             process=Process.hierarchical,
             manager_agent=agent,
-            memory=True,
+            memory=False,
             verbose=True,
             step_callback=step_cb,
         )
