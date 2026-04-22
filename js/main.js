@@ -279,6 +279,7 @@ function selectRoom(id) {
   }, 80);
 
   startLiveLog(r);
+  connectAgentSocket(r.id);
 }
 
 // ── LIVE LOG ──────────────────────────────────────────────────────────────────
@@ -313,6 +314,53 @@ function startLiveLog(room) {
   }, 1800 + Math.random() * 1200);
 }
 
+// ── BACKEND API ───────────────────────────────────────────────────────────────
+const API_BASE = 'http://localhost:8000';
+let activeSocket = null;
+
+function connectAgentSocket(roomId) {
+  if (activeSocket) { activeSocket.close(); activeSocket = null; }
+  try {
+    const ws = new WebSocket(`ws://localhost:8000/ws/${roomId}`);
+    ws.onopen  = () => console.log(`[WS] connected → ${roomId}`);
+    ws.onclose = () => { activeSocket = null; };
+    ws.onerror = () => { activeSocket = null; };
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        const feed = document.getElementById('logFeed');
+        const now  = new Date();
+        const t    = [now.getHours(), now.getMinutes(), now.getSeconds()]
+          .map(n => String(n).padStart(2, '0')).join(':');
+
+        if (data.type === 'ack') {
+          appendLog(feed, t, data.msg, 'info');
+          const tt = document.getElementById('taskText');
+          if (tt) { tt.textContent = data.msg; tt.classList.add('task-typing'); }
+        } else if (data.type === 'result') {
+          appendLog(feed, t, '✓ ' + data.msg.slice(0, 120), 'ok');
+          const tt = document.getElementById('taskText');
+          if (tt) { tt.textContent = data.msg.slice(0, 160) + '…'; tt.classList.remove('task-typing'); }
+        } else if (data.type === 'error') {
+          appendLog(feed, t, '⚠ ' + data.msg, 'warn');
+        }
+      } catch {}
+    };
+    activeSocket = ws;
+  } catch (err) {
+    console.warn('[WS] backend not reachable, using mock logs');
+  }
+}
+
+function appendLog(feed, t, msg, cls) {
+  if (!feed) return;
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${t}</span><span class="log-msg ${cls}">${msg}</span>`;
+  feed.appendChild(line);
+  feed.scrollTop = feed.scrollHeight;
+}
+
 // ── SEND COMMAND ──────────────────────────────────────────────────────────────
 function sendCommand() {
   const inp = document.getElementById('chatInput');
@@ -321,12 +369,25 @@ function sendCommand() {
   if (!selectedRoom) { showToast('⚠️ Select a room first'); return; }
   const r = ROOMS.find(x => x.id === selectedRoom);
   inp.value = '';
+
   const tt = document.getElementById('taskText');
-  if (tt) {
-    tt.textContent = val + '…';
-    tt.classList.add('task-typing');
+  if (tt) { tt.textContent = val + '…'; tt.classList.add('task-typing'); }
+
+  // Try backend WebSocket first, fall back gracefully
+  if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+    activeSocket.send(JSON.stringify({ command: val }));
+    showToast(`📨 Command sent to ${r.agent.name} via CrewAI`);
+  } else {
+    // Optimistic mock response if backend offline
+    showToast(`📨 Command queued for ${r.agent.name}`);
+    setTimeout(() => {
+      const feed = document.getElementById('logFeed');
+      const now  = new Date();
+      const t    = [now.getHours(), now.getMinutes(), now.getSeconds()]
+        .map(n => String(n).padStart(2,'0')).join(':');
+      appendLog(feed, t, `Command received: "${val.slice(0,60)}"`, 'info');
+    }, 600);
   }
-  showToast(`📨 Command sent to ${r.agent.name}`);
 }
 
 // ── TOAST ─────────────────────────────────────────────────────────────────────
