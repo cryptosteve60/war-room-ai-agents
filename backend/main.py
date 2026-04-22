@@ -88,21 +88,19 @@ def _make_crew(agent_id: str, command: str, step_cb=None) -> tuple[Crew, Task]:
     """
     agent = AGENTS[agent_id]
 
-    task = Task(
-        description=command,
-        agent=agent,
-        expected_output=(
-            "A thorough, actionable response. "
-            "If you are the commander, break the work into sub-tasks and "
-            "delegate each to the appropriate specialist before synthesising."
-        ),
-    )
-
     if agent_id == "bridge":
-        # Full hierarchical crew — commander can delegate to any specialist
+        # Hierarchical crew: manager_agent must NOT appear in agents list
         specialists = [AGENTS[sid] for sid in SPECIALIST_IDS]
+        task = Task(
+            description=command,
+            expected_output=(
+                "A comprehensive, actionable response that synthesises input from "
+                "all relevant specialists. Break the work into sub-tasks, delegate "
+                "each to the appropriate specialist, then combine their outputs."
+            ),
+        )
         crew = Crew(
-            agents=[agent] + specialists,
+            agents=specialists,
             tasks=[task],
             process=Process.hierarchical,
             manager_agent=agent,
@@ -112,6 +110,11 @@ def _make_crew(agent_id: str, command: str, step_cb=None) -> tuple[Crew, Task]:
         )
     else:
         # Specialist runs alone — fast, focused execution
+        task = Task(
+            description=command,
+            agent=agent,
+            expected_output="A thorough, actionable response to the given instruction.",
+        )
         crew = Crew(
             agents=[agent],
             tasks=[task],
@@ -168,19 +171,24 @@ async def send_command(req: CommandRequest):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _run_sync, req.agent_id, req.command, log_q)
 
-    # Drain queue for final result
+    # Drain queue — pick up result or first error
     result_msg = f"Task complete for {AGENT_NAMES.get(req.agent_id)}"
+    status = "ok"
     while not log_q.empty():
         item = log_q.get_nowait()
         if item["type"] == "result":
             result_msg = item["msg"]
+        elif item["type"] == "error":
+            result_msg = item["msg"]
+            status = "error"
 
     return CommandResponse(
         agent_id=req.agent_id,
         agent_name=AGENT_NAMES.get(req.agent_id, req.agent_id),
         result=result_msg,
-        status="ok",
+        status=status,
     )
+
 
 
 # ── WebSocket — real-time step-by-step streaming ──────────────────────────────
